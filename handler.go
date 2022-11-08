@@ -1,8 +1,8 @@
 package main
 
 import (
+	"fmt"
 	"html/template"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -23,6 +23,42 @@ type wasmServer struct {
 	logger     *log.Logger
 }
 
+func wasmExecJS() string {
+	wasmExecJS := os.Getenv("WASM_EXECJS")
+	if len(wasmExecJS) > 0 {
+		if fi, err := os.Stat(wasmExecJS); err != nil || fi.IsDir() {
+			fmt.Printf("can not find %s, use default: %v\n", wasmExecJS, err)
+			goto WASM_JS
+		} else {
+			fmt.Printf("use %s\n", wasmExecJS)
+			return wasmExecJS
+		}
+	}
+
+WASM_JS:
+	rootFolder := os.Getenv("TINYGOROOT")
+
+	if len(rootFolder) > 0 {
+		return path.Join(rootFolder, "targets/wasm_exec.js")
+	}
+
+	return path.Join(runtime.GOROOT(), "misc/wasm/wasm_exec.js")
+}
+
+func loadIndex() string {
+	indexFile := os.Getenv("WASM_INDEX")
+	if len(indexFile) > 0 {
+		content, err := os.ReadFile(indexFile)
+		if err != nil {
+			fmt.Println("unable to read index file and use default:", err)
+			return indexHTMLDefault
+		}
+		return string(content)
+	}
+
+	return indexHTMLDefault
+}
+
 func NewWASMServer(wasmFile string, args []string, l *log.Logger) (http.Handler, error) {
 	var err error
 	srv := &wasmServer{
@@ -37,13 +73,13 @@ func NewWASMServer(wasmFile string, args []string, l *log.Logger) (http.Handler,
 		srv.envMap[vars[0]] = vars[1]
 	}
 
-	buf, err := ioutil.ReadFile(path.Join(runtime.GOROOT(), "misc/wasm/wasm_exec.js"))
+	buf, err := os.ReadFile(wasmExecJS())
 	if err != nil {
 		return nil, err
 	}
 	srv.wasmExecJS = buf
 
-	srv.indexTmpl, err = template.New("index").Parse(indexHTML)
+	srv.indexTmpl, err = template.New("index").Parse(loadIndex())
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +126,7 @@ func (ws *wasmServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-const indexHTML = `<!doctype html>
+const indexHTMLDefault = `<!doctype html>
 <!--
 Copyright 2018 The Go Authors. All rights reserved.
 Use of this source code is governed by a BSD-style
@@ -146,3 +182,55 @@ license that can be found in the LICENSE file.
 	<button id="doneButton" style="display: none;" disabled>Done</button>
 </body>
 </html>`
+
+/*
+<!doctype html>
+<!--
+Copyright 2018 The Go Authors. All rights reserved.
+Use of this source code is governed by a BSD-style
+license that can be found in the LICENSE file.
+-->
+<html>
+
+<head>
+	<meta charset="utf-8">
+	<title>Go wasm</title>
+</head>
+
+<body>
+	<!--
+	Add the following polyfill for Microsoft Edge 17/18 support:
+	<script src="https://cdn.jsdelivr.net/npm/text-encoding@0.7.0/lib/encoding.min.js"></script>
+	(see https://caniuse.com/#feat=textencoder)
+	-->
+	<script src="wasm_exec.js"></script>
+	<script>
+		if (!WebAssembly.instantiateStreaming) { // polyfill
+			WebAssembly.instantiateStreaming = async (resp, importObject) => {
+				const source = await (await resp).arrayBuffer();
+				return await WebAssembly.instantiate(source, importObject);
+			};
+		}
+
+		const go = new Go();
+		let mod, inst;
+		WebAssembly.instantiateStreaming(fetch("wasm.wasm"), go.importObject).then((result) => {
+			mod = result.module;
+			inst = result.instance;
+			document.getElementById("runButton").disabled = false;
+		}).catch((err) => {
+			console.error(err);
+		});
+
+		async function run() {
+			console.clear();
+			await go.run(inst);
+			inst = await WebAssembly.instantiate(mod, go.importObject); // reset instance
+		}
+	</script>
+
+	<button onClick="run();" id="runButton" disabled>Run</button>
+</body>
+
+</html>
+*/

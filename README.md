@@ -3,6 +3,7 @@
 Run Go wasm tests easily in your browser.
 
 If you have a codebase targeting the wasm platform, chances are you would want to test your code in a browser. Currently, that process is a bit cumbersome:
+
 - The test needs to be compiled to a wasm file.
 - Then loaded into an HTML file along with the wasm_exec.js.
 - And finally, this needs to be served with a static file server and then loaded in the browser.
@@ -19,12 +20,12 @@ This tool automates all of that. So you just have to type `GOOS=js GOARCH=wasm g
 
 ## Ok, but how does the magic work ?
 
-`go test` allows invocation of a different binary to run a test. `go help test` has a line: 
+`go test` allows invocation of a different binary to run a test. `go help test` has a line:
 
 ```
 -exec xprog
-	    Run the test binary using xprog. The behavior is the same as
-	    in 'go run'. See 'go help run' for details.
+     Run the test binary using xprog. The behavior is the same as
+     in 'go run'. See 'go help run' for details.
 ```
 
 And `go help run` says:
@@ -32,7 +33,7 @@ And `go help run` says:
 ```
 By default, 'go run' runs the compiled binary directly: 'a.out arguments...'.
 If the -exec flag is given, 'go run' invokes the binary using xprog:
-	'xprog a.out arguments...'.
+ 'xprog a.out arguments...'.
 If the -exec flag is not given, GOOS or GOARCH is different from the system
 default, and a program named go_$GOOS_$GOARCH_exec can be found
 on the current search path, 'go run' invokes the binary using that program,
@@ -42,6 +43,7 @@ available.
 ```
 
 So essentially, there are 2 ways:
+
 - Either have a binary with the name of `go_js_wasm_exec` in your $PATH.
 - Or set the `-exec` flag in your tests.
 
@@ -112,4 +114,66 @@ This tool uses the [ChromeDP](https://chromedevtools.github.io/devtools-protocol
 
 ### Why not firefox ?
 
-Great question. The initial idea was to use a Selenium API and drive any browser to run the tests. But unfortunately, geckodriver does not support the ability to capture console logs - https://github.com/mozilla/geckodriver/issues/284. Hence, the shift to use the ChromeDP protocol circumvents the need to have any external driver binary and just have a browser installed in the machine.
+Great question. The initial idea was to use a Selenium API and drive any browser to run the tests. But unfortunately, geckodriver does not support the ability to capture console logs - <https://github.com/mozilla/geckodriver/issues/284>. Hence, the shift to use the ChromeDP protocol circumvents the need to have any external driver binary and just have a browser installed in the machine.
+
+## 修正使用 TinyGo
+
+1. 修改 TINGOROOT/targets/wasm.json 成如下：
+
+    ```json
+    {
+            "llvm-target":   "wasm32-unknown-wasi",
+            "cpu":           "generic",
+            "features":      "+bulk-memory,+nontrapping-fptoint,+sign-ext",
+            "build-tags":    ["tinygo.wasm"],
+            "goos":          "js",
+            "goarch":        "wasm",
+            "linker":        "wasm-ld",
+            "libc":          "wasi-libc",
+            "scheduler":     "asyncify",
+            "default-stack-size": 16384,
+            "cflags": [
+                    "-mbulk-memory",
+                    "-mnontrapping-fptoint",
+                    "-msign-ext"
+            ],
+            "ldflags": [
+                    "--allow-undefined-file={root}/targets/wasm-undefined.txt",
+                    "--stack-first",
+                    "--no-demangle"
+            ],
+            "emulator":      "wasmbrowsertest {}",
+            "wasm-abi":      "js"
+    }
+    ```
+
+1. 修改 TINYGOROOT/targets/wasm_exec.js 如 wasm_exec_tinygo_0.26.0.js，主要修改 `proc_exit`:
+
+    ```js
+    "proc_exit": (code) => {
+          if (global.process) {
+          // Node.js
+          if (process.exit) {
+            process.exit(code);
+          } else {
+            this.exit(code);
+          }
+
+
+          } else {
+          // Can't exit in a browser.
+          throw 'trying to exit with code ' + code;
+          }
+        },
+    ```
+
+1. 使用 test.html 版型，主要修改 `goExit`:
+
+    ```js
+    function goExit(code) {
+      exitCode = code;
+      document.getElementById("doneButton").disabled = false;
+    }
+    ```
+
+1. 執行: `env WASM_HEADLESS=off WASM_EXECJS=PROJECT_PATH/wasm_exec_tinygo_0.26.0.js WASM_INDEX=PROJECT_PATH/test.html tinygo test -x -target wasm -v PACKAGE_NAME`
